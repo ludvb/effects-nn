@@ -1,0 +1,4 @@
+.aider*
+**.egg-info/
+__pycache__/
+.envrc
