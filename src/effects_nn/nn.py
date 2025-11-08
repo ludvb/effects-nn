@@ -40,12 +40,15 @@ class _Program[**InputT, OutputT](metaclass=abc.ABCMeta):
     def __call__(self, *args, _name: str | None = None, **kwargs):
         with program_store.scope(_name or []):
             ns = program_store.get_path()
+            call_in_context = fx.bind(
+                self._call_program, bind_current_context=True
+            )
 
             @fx.handler
             def default_handler(eff: ApplyProgram):
                 if program_store.get_path() != ns:
                     return fx.send(eff, interpret_final=False)
-                return self._call_program(*eff.apply_args, **eff.apply_kwargs)
+                return call_in_context(*eff.apply_args, **eff.apply_kwargs)
 
             def _send_apply() -> OutputT:
                 return fx.send(ApplyProgram(apply_args=args, apply_kwargs=kwargs))
