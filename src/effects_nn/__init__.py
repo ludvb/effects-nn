@@ -4,6 +4,7 @@ from effects_nn.nn import (
     init_program,
     pure_program,
     impure_program,
+    name,
     program_store,
     unlift_program,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "program_store",
     "ApplyProgram",
     "init_program",
+    "name",
     "pure_program",
     "impure_program",
     "unlift_program",

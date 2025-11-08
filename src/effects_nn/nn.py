@@ -11,6 +11,19 @@ import effects_state as state
 program_store = state.create_state_domain("program_store")
 
 
+def name[**InputT, OutputT](
+    name: str | None = None,
+) -> Callable[[Callable[InputT, OutputT]], Callable[InputT, OutputT]]:
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            with program_store.scope(name or []):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 @dc.dataclass
 class ApplyProgram[OutputT](fx.Effect[OutputT]):
     apply_args: tuple
@@ -24,8 +37,8 @@ class _Program[**InputT, OutputT](metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def _call_program(self, *args: InputT.args, **kwargs: InputT.kwargs) -> OutputT: ...
 
-    def __call__(self, *args, name: str | None = None, **kwargs):
-        with program_store.scope(name or []):
+    def __call__(self, *args, _name: str | None = None, **kwargs):
+        with program_store.scope(_name or []):
             ns = program_store.get_path()
 
             @fx.handler
