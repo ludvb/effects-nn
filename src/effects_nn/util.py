@@ -1,5 +1,9 @@
+import warnings
+
+
 def filter_state(state, *predicates):
-    """Separate a nested state structure into multiple groups based on predicates.
+    """
+    Separate a nested state structure into multiple groups based on predicates.
 
     Args:
         state: Nested structure (dicts, tuples, NamedTuples, etc.)
@@ -78,7 +82,7 @@ def filter_state(state, *predicates):
     return traverse(state)
 
 
-def merge_state(state_def, *groups):
+def merge_state(state_def, *groups, strict: bool = False):
     """
     Reconstruct a state structure from state_def and groups.
 
@@ -86,6 +90,8 @@ def merge_state(state_def, *groups):
         state_def: Structure definition from filter_state
         *groups: group1, group2, ..., groupN, rest
                  (where rest contains unmatched values)
+        strict: If False (default), ignore extra fields and warn about mismatches in NamedTuples.
+                If True, raise errors on field mismatches (like PyTorch's load_state_dict).
 
     Returns:
         Reconstructed state matching the original structure
@@ -96,6 +102,9 @@ def merge_state(state_def, *groups):
 
         >>> state_def, arrays, ints, rest = filter_state(state, is_array, is_int)
         >>> reconstructed = merge_state(state_def, arrays, ints, rest)
+
+        >>> # Gracefully handle structure mismatches
+        >>> reconstructed = merge_state(state_def, arrays, rest, strict=False)
     """
 
     def reconstruct(def_node, group_nodes):
@@ -117,11 +126,66 @@ def merge_state(state_def, *groups):
 
             case "namedtuple":
                 _, name, cls, sub_defs = def_node
+
+                # Reconstruct all values from sub_defs
                 values = {
                     f: reconstruct(sub_def, [g.get(f) if g else None for g in group_nodes])
                     for f, sub_def in sub_defs.items()
                 }
-                return cls(**values)
+
+                # Get expected fields from the NamedTuple class
+                expected_fields = set(cls._fields)
+                provided_fields = set(values.keys())
+
+                # Check for mismatches
+                extra_fields = provided_fields - expected_fields
+                missing_fields = expected_fields - provided_fields
+
+                if extra_fields or missing_fields:
+                    if strict:
+                        # In strict mode, raise an error
+                        error_parts = []
+                        if extra_fields:
+                            error_parts.append(f"extra fields {extra_fields}")
+                        if missing_fields:
+                            error_parts.append(f"missing fields {missing_fields}")
+                        raise ValueError(
+                            f"NamedTuple {name} field mismatch: {', '.join(error_parts)}"
+                        )
+                    else:
+                        # In non-strict mode, warn and filter
+                        if extra_fields:
+                            warnings.warn(
+                                f"Ignoring extra fields {extra_fields} when reconstructing {name}",
+                                UserWarning,
+                                stacklevel=3
+                            )
+                        if missing_fields:
+                            warnings.warn(
+                                f"Missing fields {missing_fields} when reconstructing {name}, "
+                                f"will use default values if available",
+                                UserWarning,
+                                stacklevel=3
+                            )
+
+                # Get default values for the NamedTuple if they exist
+                defaults = {}
+                if hasattr(cls, '_field_defaults'):
+                    # typing.NamedTuple style
+                    defaults = cls._field_defaults
+                elif hasattr(cls, '__defaults__') and cls.__defaults__:
+                    # collections.namedtuple style - defaults are for last N fields
+                    n_defaults = len(cls.__defaults__)
+                    for i, default in enumerate(cls.__defaults__):
+                        field_idx = len(cls._fields) - n_defaults + i
+                        defaults[cls._fields[field_idx]] = default
+
+                # Filter to only expected fields, using defaults when available
+                filtered_values = {
+                    f: values.get(f, defaults.get(f, None)) for f in expected_fields
+                }
+
+                return cls(**filtered_values)
 
             case "tuple":
                 _, sub_defs = def_node
@@ -154,11 +218,11 @@ def merge_state(state_def, *groups):
                 ]
 
             case "group":
-                _, group_idx, path = def_node
+                _, group_idx, _ = def_node
                 return group_nodes[group_idx]
 
             case "rest":
-                _, path = def_node
+                _, _ = def_node
                 return group_nodes[-1]  # Rest is always last
 
             case _:
