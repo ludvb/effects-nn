@@ -2,26 +2,13 @@
 
 import abc
 import dataclasses as dc
-from typing import Any, Callable, Concatenate, overload
+import functools
+from typing import Any, Callable, Concatenate, Protocol, overload
 
 import effects as fx
 import effects_state as state
 
-
 program_store = state.create_state_domain("program_store")
-
-
-def name[**InputT, OutputT](
-    name: str | None = None,
-) -> Callable[[Callable[InputT, OutputT]], Callable[InputT, OutputT]]:
-    def decorator(fn):
-        def wrapper(*args, **kwargs):
-            with program_store.scope(name or []):
-                return fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
 
 
 @dc.dataclass
@@ -59,7 +46,8 @@ class _Program[**InputT, OutputT](metaclass=abc.ABCMeta):
 class _InitProgram[**InputT](_Program[InputT, None]):
     def _call_program(self, *args: InputT.args, **kwargs: InputT.kwargs):
         state = self.fn(*args, **kwargs)
-        program_store.update(state=state)
+        if state is not None:
+            program_store.update(state=state)
 
     def __call__(self, *args: InputT.args, **kwargs: InputT.kwargs) -> None:
         return super().__call__(*args, **kwargs)
@@ -67,7 +55,10 @@ class _InitProgram[**InputT](_Program[InputT, None]):
 
 class _PureProgram[**InputT, OutputT](_Program[InputT, OutputT]):
     def _call_program(self, *args: InputT.args, **kwargs: InputT.kwargs) -> OutputT:
-        state = program_store.get("state")
+        try:
+            state = program_store.get("state")
+        except KeyError:
+            state = None
         return self.fn(state, *args, **kwargs)
 
     def __call__(self, *args: InputT.args, **kwargs: InputT.kwargs) -> OutputT:
@@ -76,9 +67,13 @@ class _PureProgram[**InputT, OutputT](_Program[InputT, OutputT]):
 
 class _ImpureProgram[**InputT, OutputT](_Program[InputT, OutputT]):
     def _call_program(self, *args: InputT.args, **kwargs: InputT.kwargs) -> OutputT:
-        state = program_store.get("state")
+        try:
+            state = program_store.get("state")
+        except KeyError:
+            state = None
         state, out = self.fn(state, *args, **kwargs)
-        program_store.update(state=state)
+        if state is not None:
+            program_store.update(state=state)
         return out
 
     def __call__(self, *args: InputT.args, **kwargs: InputT.kwargs) -> OutputT:
@@ -144,3 +139,65 @@ def unlift_program[**InputT, OutputT](
 
         case _:
             raise ValueError(f"Unknown program type: {type(program)}")
+
+
+class _NameDecorator(Protocol):
+    @overload
+    def __call__[**InputT, OutputT](
+        self, fn: _PureProgram[InputT, OutputT]
+    ) -> _PureProgram[InputT, OutputT]: ...
+
+    @overload
+    def __call__[**InputT, OutputT](
+        self, fn: _ImpureProgram[InputT, OutputT]
+    ) -> _ImpureProgram[InputT, OutputT]: ...
+
+    @overload
+    def __call__[**InputT](
+        self, fn: _InitProgram[InputT]
+    ) -> _InitProgram[InputT]: ...
+
+    @overload
+    def __call__[**InputT, OutputT](
+        self, fn: Callable[InputT, OutputT]
+    ) -> Callable[InputT, OutputT]: ...
+
+    def __call__(self, fn) -> Any: ...
+
+
+def name(name: str | list[str] | None = None) -> _NameDecorator:
+    if name is None:
+        name = []
+
+    def decorator(fn):
+        match fn:
+            case _PureProgram():
+                @pure_program
+                @functools.wraps(fn)
+                def wrapper(state, *args, **kwargs):
+                    with program_store.scope(name):
+                        return fn(*args, **kwargs)
+
+            case _ImpureProgram():
+                @impure_program
+                @functools.wraps(fn)
+                def wrapper(state, *args, **kwargs):
+                    with program_store.scope(name):
+                        return None, fn(*args, **kwargs)
+
+            case _InitProgram():
+                @init_program
+                @functools.wraps(fn)
+                def wrapper(*args, **kwargs):
+                    with program_store.scope(name):
+                        return fn(*args, **kwargs)
+
+            case _:
+                @functools.wraps(fn)
+                def wrapper(*args, **kwargs):
+                    with program_store.scope(name):
+                        return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator  # type: ignore[return-value]
